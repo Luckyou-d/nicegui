@@ -9,10 +9,9 @@ from typing import Any
 
 from fastapi import FastAPI
 from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import core, helpers, observables
 from .context import context
@@ -28,22 +27,36 @@ TAB_PREFIX = 'tab-'
 TTL_BUFFER_SECONDS = 20  # Buffer to avoid race with prune_tab_storage polling
 
 
-class RequestTrackingMiddleware(BaseHTTPMiddleware):
+# pure ASGI middleware, because BaseHTTPMiddleware leaves reference cycles behind with every request
+class RequestTrackingMiddleware:
+    """Provide the request to ``app.storage``, create its user storage and protect it from pruning while in flight."""
 
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope['type'] != 'http':
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive)
         request_contextvar.set(request)
         if 'id' not in request.session:
             request.session['id'] = str(uuid.uuid4())
         request.state.responded = False
         session_id = request.session['id']
+
+        async def send_and_mark_responded(message: Message) -> None:
+            if message['type'] == 'http.response.start':
+                request.state.responded = True
+            await send(message)
+
         active_request_sessions = core.app.storage._active_request_sessions  # pylint: disable=protected-access
         active_request_sessions[session_id] += 1
         try:
             if session_id not in core.app.storage._users:  # pylint: disable=protected-access
                 await core.app.storage._create_user_storage(session_id)  # pylint: disable=protected-access
-            response = await call_next(request)
-            request.state.responded = True
-            return response
+            await self.app(scope, receive, send_and_mark_responded)
         finally:
             active_request_sessions[session_id] -= 1
             if active_request_sessions[session_id] <= 0:
