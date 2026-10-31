@@ -1,6 +1,7 @@
 import pytest
+from fastapi.responses import RedirectResponse
 
-from nicegui import ui
+from nicegui import app, ui
 from nicegui.testing import User
 
 
@@ -33,3 +34,16 @@ async def test_forwarded_prefix_is_reflected_in_safe_form(user: User, sent: byte
     assert f'{expected}/_nicegui/' in response.text
     if (raw := sent.decode('latin-1')) != expected:
         assert raw not in response.text, 'a non-passthrough prefix must never appear raw in any sink'
+
+
+@pytest.mark.parametrize('location, expected', [
+    ('/new', '/prefix/new'),
+    ('https://example.com/new', 'https://example.com/new'),
+])
+async def test_forwarded_prefix_is_prepended_to_redirects_within_the_app(user: User, location: str, expected: str):
+    @app.get('/old')
+    def old():
+        return RedirectResponse(location)
+
+    response = await user.http_client.get('/old', headers={'X-Forwarded-Prefix': '/prefix'})
+    assert response.headers['Location'] == expected

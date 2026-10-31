@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 import httpx
 import pytest
+from fastapi.responses import StreamingResponse
 
 from nicegui import Client, app, background_tasks, context, core, ui
 from nicegui.app import app as app_module
@@ -395,6 +396,28 @@ def test_user_storage_survives_prune_during_request(screen: Screen, monkeypatch:
     screen.ui_run_kwargs['storage_secret'] = 'just a test'
     screen.open('/data')
     screen.should_contain('default')
+
+
+async def test_user_storage_survives_prune_while_streaming(user: User, monkeypatch: pytest.MonkeyPatch):
+    """Prune must not remove user storage while a streaming response is still sending its body."""
+    monkeypatch.setattr(app_module, 'USER_STORAGE_PRUNE_INTERVAL', 0)
+    streaming = asyncio.Event()
+    pruned = asyncio.Event()
+
+    @app.get('/stream')
+    async def stream():
+        async def body():
+            yield 'value: '
+            streaming.set()
+            await pruned.wait()
+            yield app.storage.user.get('value', 'default')
+        return StreamingResponse(body())
+
+    request = background_tasks.create(user.http_client.get('/stream'))
+    await streaming.wait()
+    await prune_user_storage()
+    pruned.set()
+    assert (await request).text == 'value: default'
 
 
 def test_storage_serialization_error_points_at_offending_key(screen: Screen):
