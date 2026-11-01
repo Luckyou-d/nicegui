@@ -36,14 +36,20 @@ async def test_forwarded_prefix_is_reflected_in_safe_form(user: User, sent: byte
         assert raw not in response.text, 'a non-passthrough prefix must never appear raw in any sink'
 
 
-@pytest.mark.parametrize('location, expected', [
-    ('/new', '/prefix/new'),
-    ('https://example.com/new', 'https://example.com/new'),
+@pytest.mark.parametrize('prefix, location, expected', [
+    ('/prefix', '/new', '/prefix/new'),
+    ('/prefix', 'https://example.com/new', 'https://example.com/new'),
+    # a client-sent prefix must not redirect to another site
+    ('//evil.example', '/new', '/new'),
+    ('https://evil.example', '/new', '/new'),
+    ('/', '/new', '/new'),
+    ('/\\evil.example', '/new', '/%5Cevil.example/new'),  # browsers read a backslash like a slash
 ])
-async def test_forwarded_prefix_is_prepended_to_redirects_within_the_app(user: User, location: str, expected: str):
+async def test_forwarded_prefix_is_prepended_to_redirects_within_the_app(user: User,
+                                                                         prefix: str, location: str, expected: str):
     @app.get('/old')
     def old():
         return RedirectResponse(location)
 
-    response = await user.http_client.get('/old', headers={'X-Forwarded-Prefix': '/prefix'})
+    response = await user.http_client.get('/old', headers={'X-Forwarded-Prefix': prefix})
     assert response.headers['Location'] == expected

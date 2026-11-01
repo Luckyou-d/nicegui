@@ -1,3 +1,6 @@
+import re
+from urllib.parse import quote
+
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -8,7 +11,10 @@ from .version import __version__
 
 
 class RedirectWithPrefixMiddleware:
-    """Prepend the ``X-Forwarded-Prefix`` header to redirect locations within the app."""
+    """Prepend the ``X-Forwarded-Prefix`` header to redirect locations within the app.
+
+    Clients can send any prefix, so it is quoted like in ``client.py`` and ignored unless it is a path like ``/app``.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -18,7 +24,9 @@ class RedirectWithPrefixMiddleware:
             await self.app(scope, receive, send)
             return
 
-        prefix = Headers(scope=scope).get('X-Forwarded-Prefix', '')
+        prefix = quote(Headers(scope=scope).get('X-Forwarded-Prefix', ''), safe="/:@!$&'()*+,;=%")
+        if not re.match('/[^/]', prefix):
+            prefix = ''
 
         async def send_with_prefix(message: Message) -> None:
             if message['type'] == 'http.response.start':
